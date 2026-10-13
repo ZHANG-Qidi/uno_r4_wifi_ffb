@@ -1,6 +1,6 @@
-#+TITLE: UNO R4 WiFi HID FFB Wheel Firmware
+#+TITLE: Arduino UNO R4 WiFi HID FFB Wheel Firmware
 
-这是一个基于 Arduino UNO R4 WiFi 的 USB HID 力反馈方向盘固件，由 HID-FFB-0.1 移植，使用 setup()/loop() 循环调度，不使用 FreeRTOS。设备向主机提供方向盘和三路踏板轴输入，并通过 HID PID（Physical Interface Device）报告接收游戏发送的力反馈效果。固件通过磁编码器获取方向盘位置，并使用 SimpleFOC 控制三相无刷电机。
+这是一个基于 Arduino UNO R4 WiFi 的 USB HID 力反馈方向盘固件。设备向主机提供方向盘和三路踏板轴输入，并通过 HID PID（Physical Interface Device）报告接收游戏发送的力反馈效果。固件通过磁编码器获取方向盘位置，并使用 SimpleFOC 控制三相无刷电机。
 
 #+begin_quote
 本项目面向开发和实验。电机可能产生较大扭矩；首次上电、调参和测试时应卸载方向盘负载、准备独立急停，并从较低电压和力反馈增益开始。
@@ -13,64 +13,29 @@
 - 使用磁编码器反馈方向盘位置，并通过 FOC 控制三相无刷电机。
 - 支持恒定力、阻尼及扩展阻尼效果，并处理设备总增益和单效果增益。
 - 提供方向盘行程软件限位。
-- 使用 Arduino loop() 调度 FOC、模拟输入和状态指示等工作，USB 协议服务由 core 的中断处理路径负责。
-- USB CDC 串口输出原有日志，与 HID 共存。
+- 使用 setup() / loop() 管理 USB、FOC、模拟输入和状态指示等工作。
 
 ** 关键基础组件
 
 | 组件 | 作用 |
 |------+------|
-| Arduino Renesas core | 提供 UNO R4 WiFi 的 GPIO、ADC、SPI、I²C、PWM、时间服务和 USB 接入，不承载 HID 力反馈协议逻辑。 |
-| TinyUSB | 使用 core 自带实现，处理 USB 枚举、端点传输和 HID/CDC 类通信。项目接入 HID 报告描述符，实现输入报告及 PID 力反馈报告的收发。 |
+| TinyUSB | 提供 USB Device 协议栈，处理 USB 枚举、端点传输和 HID 类通信。项目在其基础上实现设备描述符、输入报告及 PID 力反馈报告的收发。 |
 | HID-FFB | 实现方向盘和踏板的 HID 报告、PID 力反馈效果解析与计算，并将效果转换为电机控制目标。 |
-| SimpleFOC | 执行三相无刷电机的 FOC 控制；通过 Arduino core 访问底层传感器与驱动接口，使用 SpaceVectorPWM 和电压力矩控制。 |
-
-** Arduino 接入
-
-直接使用 Arduino core 和已安装的 SimpleFOC，不增加平台兼容层或源码生成脚本。模块源码位于 =src/hid_ffb=，各 .cpp/.c 独立编译，主程序直接调用原模块接口。移植保留原 HID-FFB 功能、调用和日志注释状态，不增删效果或增加协议校验。
+| SimpleFOC | 执行三相无刷电机的 FOC 控制；通过 Arduino 兼容层访问底层传感器与驱动接口。 |
 
 ** USB 与 HID-FFB
 
-TinyUSB 负责 USB Device 协议栈和 HID 通信基础；core 负责设备、配置及字符串描述符，HID-FFB 通过 =__USBGetHIDReport()= 提供原报告描述符，负责方向盘/踏板输入报告、PID 力反馈报告处理及效果计算。两者分工明确：TinyUSB 提供传输机制，HID-FFB 定义并实现本设备使用的 HID/FFB 行为。
-
-USB 通过 =__USBStart()= 启动。当前启用 CDC 控制接口 0、CDC 数据接口 1 和 HID 接口 2；未启用 DFU、MSC、MIDI 或 Vendor 接口。HID IN 端点采用 core 默认 10 ms 轮询，Output 和 Feature 通过 EP0 控制传输接收。Output 的 report_id 非零时补回解析器需要的 ID 首字节，为零时直接传入原缓冲区。=CFG_TUD_HID_EP_BUFSIZE= 使用 core 默认值 64，与原工程一致。
-
-=ESP_LOGI=、SimpleFOC 日志和 =Motor ready.= 提示使用 =SerialUSB= 输出，不增加周期遥测或等待串口连接的循环。core 根据已链接的 =__USBInstallSerial= 符号加入 CDC，无需调用该函数。=SerialUSB.begin()= 忽略波特率参数，日志查看可选择 115200；启动日志是否可见取决于 USB 枚举及电脑串口连接状态。当前板型的 =Serial= 仍为硬件 UART，与 =SerialUSB= 不同。
+TinyUSB 负责 USB Device 协议栈和 HID 通信基础；HID-FFB 负责设备描述符、方向盘/踏板输入报告、PID 力反馈报告处理及效果计算。两者分工明确：TinyUSB 提供传输机制，HID-FFB 定义并实现本设备使用的 HID/FFB 行为。
 
 * 配置入口
 
-两个配置文件均位于 =src/hid_ffb=，模块按文件名直接包含，无需额外 -I 参数。
+** =Arduino_config.h=：兼容层与硬件资源配置
 
-** =Arduino_config.h=：硬件资源配置
-
-此配置入口维护外设使用的板级资源映射，例如 I²C、SPI、ADC 和电机驱动输出。更换接线或外设资源时，优先检查该文件及其平台对应的初始化配置。不要将平台引脚细节散落到 HID-FFB 或 FOC 逻辑中。
-
-| 功能 | UNO R4 WiFi 引脚 |
-|------+------------------|
-| 电机 U/V/W PWM | D3/D5/D6 |
-| 驱动 EN | D8 |
-| SPI CS | D10 |
-| SPI MOSI/MISO/SCK | D11/D12/D13 |
-| I²C SDA/SCL | A4/A5 |
-| 三路踏板 ADC | A0/A1/A2 |
-
-D13 同时是板载 LED 和 SPI SCK，默认禁用状态 LED；可用 D7 外接 LED，或在使用 I²C 编码器时使用 D13。
+此配置入口维护 Arduino 兼容层及外设使用的板级资源映射，例如 GPIO、UART、I²C、SPI、ADC 和电机驱动输出。更换接线或外设资源时，优先检查该文件及其平台对应的初始化配置。不要将平台引脚细节散落到 HID-FFB 或 FOC 逻辑中。
 
 ** =FFB_config.h=：电机、FOC 与力反馈设定
 
 此配置入口维护与具体 GPIO 映射分离的设备和控制参数，例如电机极对数、传感器类型与方向、供电和电压限制、FOC 控制周期、方向盘行程、Commander 波特率，以及恒定力和阻尼增益。更换电机或传感器、调整控制和手感参数时，优先检查该文件；传感器实际接线与外设实例仍由板级配置负责。
-
-当前为 7 极对电机，供电 9 V、电压限制 6 V、校准电压 1 V，方向盘总行程 540°。默认选择 SPI；=CONFIG_FFB_USE_I2C= 改为 1 时使用 AS5600 I²C。
-
-=foc_setup.cpp= 中显式定义 =MT6701_SPI=：SPI_MODE1、1 MHz、14 位、angle_register=0x3FFF、data_start_bit=15、command_rw_bit=0、command_parity_bit=1。该配置恢复原工程参数，不使用 SimpleFOC 2.4.0 中不同的 AS5147_SPI 预设。传感器仅通过 =sensor.init()= 初始化，不额外启动 I²C 或设置时钟；保留的 =CONFIG_ARDUINO_I2C_FREQ_HZ= 当前未使用。
-
-* 初始化与调度
-
-=setup()= 依次调用 adc_setup()、usb_setup()、foc_setup()。SimpleFOC 初始化与校准只执行一次，失败时的电机禁用由库处理。当前为电压力矩控制，未配置电流采样，初始化中的 =No current sense.= 提示不要求增加电流采样功能。
-
-=loop()= 按到期检查调用模块：FOC 目标周期 1000 μs，ADC 及 HID 输入上报检查周期均为 10 ms。FFB 计算仍由 Output 报文触发。超时执行一次，不连续补跑；主循环不调用 tud_task()。
-
-=loop_timing= 保留 FOC 最近耗时、最大耗时和执行耗时超出目标周期的次数，不自动打印。计时覆盖完整 foc_loop()，包含总线等待及期间中断耗时，不包含单独执行的 ADC、HID 上报，也不统计平均耗时或调度延迟。当前未实测算力占用；若实际维持 1 kHz，平均 FOC 耗时除以 1000 μs 可估算其时间预算占比。
 
 * 力反馈支持情况
 
@@ -83,14 +48,10 @@ D13 同时是板载 LED 和 SPI SCK，默认禁用状态 LED；可用 D7 外接 
 
 HID 描述符可能声明其他 PID 效果类型，但弹簧、摩擦、惯性、周期波形、包络及部分设备控制行为尚未完整实现。因此，不同游戏和驱动软件的兼容性会有所差异。
 
-* USB 身份与兼容性
-
-当前使用 Arduino core 提供的 UNO R4 WiFi USB 身份，不使用原工程的 Logitech G923 Xbox VID/PID。
-
 * 安全提示
 
 电机电压、驱动器、电流能力、传感器方向和软件行程限制都会影响设备安全。更换电机、驱动器或传感器后，应重新核对参数和接线，不要直接沿用默认值运行。测试时使用独立急停，并从较低电压与力反馈增益开始。
 
 * 许可证
 
-本移植保留原源码的版权和许可声明，许可范围以原项目及各源文件声明为准。Arduino Core、TinyUSB、SimpleFOC 及其他第三方组件仍适用各自的版权声明和许可证；重新分发时应保留相应许可文本并履行其许可证规定的义务。
+除另有注明的文件外，本项目原创代码采用 MIT License，完整条款见仓库根目录的 =LICENSE=。此声明仅适用于本项目原创代码，不改变第三方组件的许可条款。Arduino Core、TinyUSB、SimpleFOC、FreeRTOS 及其他第三方组件仍适用各自的版权声明和许可证；重新分发时应保留相应许可文本并履行其许可证规定的义务。
