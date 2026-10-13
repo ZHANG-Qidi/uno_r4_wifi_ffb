@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <tusb.h>
 #include <usb/USB.h>
+
 #include "hidReportDesc.h"
 
 // Arduino Renesas core owns device/configuration/string descriptors and USB IRQs.
